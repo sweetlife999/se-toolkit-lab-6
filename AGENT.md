@@ -7,6 +7,7 @@ This agent is a CLI tool that connects to an LLM and answers questions using too
 1. **Read documentation** - Navigate the wiki to find how-to guides and conventions
 2. **Read source code** - Examine Python files to understand the system architecture
 3. **Query the live API** - Fetch real-time data, test endpoints, and diagnose bugs
+This agent is a CLI tool that connects to an LLM and answers questions using tools. It implements an **agentic loop** that allows the LLM to call tools, reason about results, and iteratively find answers in the project documentation.
 
 ## LLM Provider
 
@@ -70,6 +71,7 @@ This agent is a CLI tool that connects to an LLM and answers questions using too
    - `read_file(path)`: Read contents of a file
    - `list_files(path)`: List files in a directory
    - `query_api(method, path, body)`: Call the backend API
+   - Both tools include path security validation
 
 4. **LLM API Call** (`call_llm()`)
    - Uses `httpx` for HTTP requests
@@ -109,6 +111,13 @@ This agent is a CLI tool that connects to an LLM and answers questions using too
 **Example:**
 ```json
 {"tool": "read_file", "args": {"path": "backend/app/main.py"}, "result": "from fastapi import FastAPI..."}
+| `path` | string | Relative path from project root (e.g., `wiki/git-workflow.md`) |
+
+**Returns:** File contents as a string, or an error message if the file doesn't exist or is inaccessible.
+
+**Example:**
+```json
+{"tool": "read_file", "args": {"path": "wiki/git-workflow.md"}, "result": "# Git Workflow\n\n..."}
 ```
 
 ### `list_files`
@@ -160,6 +169,13 @@ This agent is a CLI tool that connects to an LLM and answers questions using too
   "args": {"method": "GET", "path": "/items/"},
   "result": "{\"status_code\": 200, \"body\": \"[{...}, {...}]\"}"
 }
+| `path` | string | Relative directory path from project root (e.g., `wiki`) |
+
+**Returns:** Newline-separated listing of entry names, or an error message.
+
+**Example:**
+```json
+{"tool": "list_files", "args": {"path": "wiki"}, "result": "git-workflow.md\nssh.md\n..."}
 ```
 
 ### Tool Schema (OpenAI Function Calling)
@@ -180,6 +196,17 @@ Tools are defined using OpenAI-compatible function calling schema:
         "body": {"type": "string", "description": "JSON request body..."}
       },
       "required": ["method", "path"]
+    "name": "read_file",
+    "description": "Read the contents of a file from the project repository",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Relative path from project root"
+        }
+      },
+      "required": ["path"]
     }
   }
 }
@@ -188,6 +215,7 @@ Tools are defined using OpenAI-compatible function calling schema:
 ### Path Security
 
 `read_file` and `list_files` validate paths to prevent directory traversal attacks:
+Both tools validate paths to prevent directory traversal attacks:
 
 1. **Reject `..` in paths** - Prevents `../` traversal
 2. **Reject absolute paths** - Only relative paths allowed
@@ -228,6 +256,15 @@ The prompt instructs the LLM to:
 - Always provide a source reference when possible
 - Convert section headers to anchors (lowercase, spaces to hyphens)
 - Stop calling tools once the answer is found
+### System Prompt
+
+The system prompt instructs the LLM to:
+
+1. Use `list_files` to explore the wiki directory structure
+2. Use `read_file` to read specific files and find answers
+3. Look for section headers (lines starting with `##`)
+4. Provide answers with source references in format: `wiki/filename.md#section-anchor`
+5. Convert section headers to anchors (lowercase, spaces to hyphens)
 
 ### Message Format
 
@@ -240,6 +277,10 @@ The conversation uses OpenAI's message format:
   {"role": "assistant", "tool_calls": [{"function": {"name": "query_api", ...}}]},
   {"role": "tool", "tool_call_id": "...", "content": "{\"status_code\": 200, ...}"},
   {"role": "assistant", "content": "There are 120 items in the database."}
+  {"role": "user", "content": "How do you resolve a merge conflict?"},
+  {"role": "assistant", "tool_calls": [...]},
+  {"role": "tool", "tool_call_id": "...", "content": "..."},
+  {"role": "assistant", "content": "Final answer..."}
 ]
 ```
 
@@ -291,6 +332,15 @@ uv run agent.py "How many items are in the database?"
   "source": "API endpoint GET /items/",
   "tool_calls": [
     {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}, "result": "..."}
+uv run agent.py "How do you resolve a merge conflict?"
+
+# Output (JSON to stdout)
+{
+  "answer": "Edit the conflicting file, choose which changes to keep, then stage and commit.",
+  "source": "wiki/git-workflow.md#resolving-merge-conflicts",
+  "tool_calls": [
+    {"tool": "list_files", "args": {"path": "wiki"}, "result": "..."},
+    {"tool": "read_file", "args": {"path": "wiki/git-workflow.md"}, "result": "..."}
   ]
 }
 ```
@@ -353,6 +403,9 @@ The agent is tested against 10 questions in `run_eval.py`:
 4. **Environment variables**: Reading all config from environment variables (not hardcoded) is critical for the autochecker to work with different credentials.
 
 5. **Max tool calls**: The 10-call limit prevents infinite loops but may truncate complex multi-step reasoning. The final summary call helps recover partial answers.
+2. `read_file` tool is used for documentation questions
+3. `list_files` tool is used for directory exploration questions
+4. Source field contains wiki file reference
 
 ## Files
 
@@ -364,5 +417,7 @@ The agent is tested against 10 questions in `run_eval.py`:
 | `plans/task-1.md` | Task 1 implementation plan |
 | `plans/task-2.md` | Task 2 implementation plan |
 | `plans/task-3.md` | Task 3 implementation plan |
+| `plans/task-1.md` | Task 1 implementation plan |
+| `plans/task-2.md` | Task 2 implementation plan |
 | `AGENT.md` | This documentation |
 | `test_agent.py` | Regression tests |
