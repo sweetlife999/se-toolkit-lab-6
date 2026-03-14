@@ -5,6 +5,11 @@ Tests verify that agent.py:
 2. Uses read_file tool for documentation questions
 3. Uses list_files tool for directory exploration questions
 4. Exits with code 0 on success
+"""Regression test for Task 1: Call an LLM from Code.
+
+This test verifies that agent.py:
+1. Outputs valid JSON with required fields (answer, tool_calls)
+2. Exits with code 0 on success
 """
 
 import json
@@ -33,6 +38,22 @@ def run_agent(question: str, timeout: int = 120) -> tuple[dict, str]:
     # Check stdout is not empty
     assert result.stdout.strip(), f"Agent produced no output. Stderr: {stderr}"
     
+def test_agent_outputs_valid_json():
+    """Test that agent.py outputs valid JSON with answer and tool_calls fields."""
+    # Run agent with a simple question
+    result = subprocess.run(
+        [sys.executable, "agent.py", "What is 2 + 2? Answer with just the number."],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    # Check exit code
+    assert result.returncode == 0, f"Agent exited with code {result.returncode}: {result.stderr}"
+
+    # Check stdout is not empty
+    assert result.stdout.strip(), "Agent produced no output"
+
     # Parse JSON
     try:
         data = json.loads(result.stdout.strip())
@@ -46,6 +67,7 @@ def test_agent_outputs_valid_json():
     """Test that agent.py outputs valid JSON with answer, source, and tool_calls fields."""
     data, stderr = run_agent("What is 2 + 2? Answer with just the number.")
     
+
     # Check required fields
     assert "answer" in data, "Missing 'answer' field in output"
     assert isinstance(data["answer"], str), "'answer' must be a string"
@@ -111,3 +133,7 @@ def test_agent_no_argument_exits_with_error():
     
     # Error message should go to stderr
     assert result.stderr.strip(), "Agent should print usage to stderr"
+
+    assert "tool_calls" in data, "Missing 'tool_calls' field in output"
+    assert isinstance(data["tool_calls"], list), "'tool_calls' must be a list"
+    assert len(data["tool_calls"]) == 0, "'tool_calls' must be empty for Task 1"
