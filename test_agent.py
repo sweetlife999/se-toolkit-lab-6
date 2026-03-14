@@ -1,0 +1,42 @@
+"""Regression test for Task 1: Call an LLM from Code.
+
+This test verifies that agent.py:
+1. Outputs valid JSON with required fields (answer, tool_calls)
+2. Exits with code 0 on success
+"""
+
+import json
+import subprocess
+import sys
+
+
+def test_agent_outputs_valid_json():
+    """Test that agent.py outputs valid JSON with answer and tool_calls fields."""
+    # Run agent with a simple question
+    result = subprocess.run(
+        [sys.executable, "agent.py", "What is 2 + 2? Answer with just the number."],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    # Check exit code
+    assert result.returncode == 0, f"Agent exited with code {result.returncode}: {result.stderr}"
+
+    # Check stdout is not empty
+    assert result.stdout.strip(), "Agent produced no output"
+
+    # Parse JSON
+    try:
+        data = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as e:
+        raise AssertionError(f"Agent output is not valid JSON: {result.stdout[:200]}") from e
+
+    # Check required fields
+    assert "answer" in data, "Missing 'answer' field in output"
+    assert isinstance(data["answer"], str), "'answer' must be a string"
+    assert len(data["answer"].strip()) > 0, "'answer' must not be empty"
+
+    assert "tool_calls" in data, "Missing 'tool_calls' field in output"
+    assert isinstance(data["tool_calls"], list), "'tool_calls' must be a list"
+    assert len(data["tool_calls"]) == 0, "'tool_calls' must be empty for Task 1"
