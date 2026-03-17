@@ -20,6 +20,9 @@ import httpx
 # Maximum number of tool calls per question
 MAX_TOOL_CALLS = 10
 
+# Number of iterations after which we prompt for final answer
+FINAL_ANSWER_PROMPT_ITERATION = 6
+
 
 def load_env() -> None:
     """Load environment variables from .env.agent.secret and .env.docker.secret."""
@@ -172,35 +175,39 @@ def list_files(path: str) -> str:
         return f"Error listing directory: {e}"
 
 
-def query_api(method: str, path: str, body: str = None) -> str:
+def query_api(method: str, path: str, body: str = None, auth: bool = True) -> str:
     """Call the backend API.
-    
+
     Args:
         method: HTTP method (GET, POST, PUT, DELETE, etc.)
         path: API path (e.g., '/items/', '/analytics/completion-rate')
         body: Optional JSON request body for POST/PUT requests
-    
+        auth: Whether to include authentication header (default: True). Set to False to test unauthenticated access.
+
     Returns:
         JSON string with status_code and body, or error message.
     """
     api_key, base_url = get_api_config()
-    
+
     # Validate path (basic security)
     if not path.startswith("/"):
         return "Error: Path must start with /"
-    
+
     if ".." in path:
         return "Error: Path traversal not allowed"
-    
+
     url = f"{base_url}{path}"
-    
+
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     
+    # Only include auth header if requested
+    if auth:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     print(f"  Calling API: {method} {url}...", file=sys.stderr)
-    
+
     try:
         if method.upper() == "GET":
             response = httpx.get(url, headers=headers, timeout=30)
@@ -271,7 +278,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "query_api",
-            "description": "Call the backend API to query live data, test endpoints, or check system behavior. Use this for questions about item counts, HTTP status codes, completion rates, or to reproduce errors. The API requires authentication.",
+            "description": "Call the backend API to query live data, test endpoints, or check system behavior. Use this for questions about item counts, HTTP status codes, completion rates, or to reproduce errors. The API requires authentication by default, but you can set auth=false to test unauthenticated access.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -286,6 +293,10 @@ TOOLS = [
                     "body": {
                         "type": "string",
                         "description": "JSON request body (optional, for POST/PUT requests)"
+                    },
+                    "auth": {
+                        "type": "boolean",
+                        "description": "Whether to include authentication header (default: true). Set to false to test unauthenticated access."
                     }
                 },
                 "required": ["method", "path"]
@@ -333,7 +344,7 @@ def call_llm(messages: list[dict], api_key: str, api_base: str, model: str, time
     }
     
     print(f"Calling LLM at {url}...", file=sys.stderr)
-    
+
     try:
         response = httpx.post(url, headers=headers, json=payload, timeout=timeout)
         response.raise_for_status()
@@ -369,7 +380,7 @@ Available tools:
    - Read configuration files (docker-compose.yml, Dockerfile) for deployment info
 3. query_api: Call the backend API. Use this to:
    - Query live data (e.g., GET /items/ to count items)
-   - Test endpoints (e.g., GET /items/ without auth to get status code)
+   - Test endpoints (e.g., GET /items/ without auth to get status code) - use auth=false
    - Reproduce errors (e.g., GET /analytics/completion-rate?lab=lab-99)
    - Get system information (completion rates, top learners, etc.)
 
@@ -379,6 +390,8 @@ When answering questions:
 3. For data questions (e.g., "how many items"): Use query_api to query the live system.
 4. For status code questions: Use query_api without auth headers to get the error response.
 5. For bug diagnosis: Use query_api to reproduce the error, then read_file to find the buggy code.
+6. For listing questions (e.g., "list all routers"): Use list_files to find files, then read ALL relevant files before answering.
+7. For architecture questions (e.g., "request journey"): Read docker-compose.yml, Dockerfile, caddy/Caddyfile, and backend/app/main.py, then synthesize the full picture.
 
 Always provide a source reference when possible:
 - For wiki: wiki/filename.md#section-anchor
@@ -388,9 +401,13 @@ Always provide a source reference when possible:
 Convert section headers to anchors by: lowercase, replace spaces with hyphens, remove special chars.
 Example: "## Resolving Merge Conflicts" -> wiki/git-workflow.md#resolving-merge-conflicts
 
-When you have found the answer, respond with a final message (no tool calls) that includes:
-- A clear answer
-- A source reference (if applicable)
+CRITICAL RULES:
+1. You must respond with a final answer after gathering information. Do not say things like "Let me read X next" or "Now I need to read Y".
+2. Your final answer should directly answer the question with all relevant details and include source references.
+3. For architecture questions: After reading docker-compose.yml, Dockerfile, caddy/Caddyfile, and backend/app/main.py, you MUST provide your final answer - do not read more files.
+4. Do not mention that you are using tools or gathering more information in your final answer.
+
+When you have gathered all the information needed, respond with ONLY your final answer (no tool calls).
 """
 
 
@@ -406,29 +423,30 @@ def execute_tool_call(tool_call: dict) -> str:
     function = tool_call.get("function", {})
     name = function.get("name")
     arguments_str = function.get("arguments", "{}")
-    
+
     try:
         arguments = json.loads(arguments_str)
     except json.JSONDecodeError:
         return f"Error: Invalid arguments JSON: {arguments_str}"
-    
+
     if name not in TOOL_FUNCTIONS:
         return f"Error: Unknown tool: {name}"
-    
+
     func = TOOL_FUNCTIONS[name]
-    
+
     # Call the function with appropriate arguments
     if name == "query_api":
         path = arguments.get("path", "")
         method = arguments.get("method", "GET")
         body = arguments.get("body")
-        result = func(method, path, body)
+        auth = arguments.get("auth", True)  # Default to True for backwards compatibility
+        result = func(method, path, body, auth)
     else:
         path = arguments.get("path", "")
         result = func(path)
-    
+
     print(f"  Executing {name}(...) -> {len(result)} bytes", file=sys.stderr)
-    
+
     return result
 
 
@@ -507,48 +525,61 @@ def run_agentic_loop(question: str, api_key: str, api_base: str, model: str, tim
                 "source": source,
                 "tool_calls": tool_calls_log,
             }
-        
-        # Execute tool calls
+
+        # Execute tool calls and collect results
+        tool_results = []
         for tool_call in tool_calls:
             tool_call_count += 1
-            
+
             if tool_call_count > MAX_TOOL_CALLS:
                 print(f"Warning: Max tool calls ({MAX_TOOL_CALLS}) reached", file=sys.stderr)
                 break
-            
+
             # Get tool info
             function = tool_call.get("function", {})
             name = function.get("name", "unknown")
             arguments_str = function.get("arguments", "{}")
-            
+
             try:
                 arguments = json.loads(arguments_str)
             except json.JSONDecodeError:
                 arguments = {}
-            
+
             # Execute tool
             result = execute_tool_call(tool_call)
-            
+
             # Log the tool call
             tool_calls_log.append({
                 "tool": name,
                 "args": arguments,
                 "result": result,
             })
-            
-            # Add tool response to messages
+
+            # Store result for later
+            tool_results.append((tool_call, result))
+
+        # Add assistant message with tool_calls FIRST, then tool responses
+        # This order is required by the OpenAI API spec
+        messages.append(assistant_message)
+
+        for tool_call, result in tool_results:
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.get("id", ""),
                 "content": result,
             })
-        
-        # Add assistant message to conversation
-        messages.append(assistant_message)
-    
+
+        # After a certain number of iterations, prompt for final answer
+        if tool_call_count >= FINAL_ANSWER_PROMPT_ITERATION:
+            print(f"Info: {FINAL_ANSWER_PROMPT_ITERATION} tool calls made, prompting for final answer", file=sys.stderr)
+            messages.append({
+                "role": "user",
+                "content": "You have gathered enough information. Please provide your final answer now, synthesizing all the information you have collected. Do not make any more tool calls."
+            })
+
     # Max tool calls reached - use whatever we have
     print(f"Warning: Max tool calls ({MAX_TOOL_CALLS}) reached, using partial answer", file=sys.stderr)
-    
+
     # Make one final call to get a summary answer
     messages.append({
         "role": "user",
