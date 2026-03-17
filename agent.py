@@ -278,7 +278,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "query_api",
-            "description": "Call the backend API to query live data, test endpoints, or check system behavior. Use this for questions about item counts, HTTP status codes, completion rates, or to reproduce errors. The API requires authentication by default, but you can set auth=false to test unauthenticated access.",
+            "description": "Call the backend API to query live data, test endpoints, or check system behavior. Use this for questions about item counts, learner counts, HTTP status codes, completion rates, or to reproduce errors. Available endpoints: GET /items/, GET /learners/, GET /analytics/completion-rate, GET /analytics/top-learners, GET /analytics/scores, GET /analytics/pass-rates, GET /analytics/timeline, GET /analytics/groups. The API requires authentication by default, but you can set auth=false to test unauthenticated access.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -288,7 +288,7 @@ TOOLS = [
                     },
                     "path": {
                         "type": "string",
-                        "description": "API path (e.g., '/items/', '/analytics/completion-rate', '/analytics/top-learners')"
+                        "description": "API path (e.g., '/items/', '/learners/', '/analytics/completion-rate', '/analytics/top-learners')"
                     },
                     "body": {
                         "type": "string",
@@ -379,7 +379,7 @@ Available tools:
    - Read source code (backend/app/*.py) to find framework info, endpoints, or bugs
    - Read configuration files (docker-compose.yml, Dockerfile) for deployment info
 3. query_api: Call the backend API. Use this to:
-   - Query live data (e.g., GET /items/ to count items)
+   - Query live data (e.g., GET /items/ to count items, GET /learners/ to count learners)
    - Test endpoints (e.g., GET /items/ without auth to get status code) - use auth=false
    - Reproduce errors (e.g., GET /analytics/completion-rate?lab=lab-99)
    - Get system information (completion rates, top learners, etc.)
@@ -387,25 +387,35 @@ Available tools:
 When answering questions:
 1. For wiki/how-to questions: Use list_files to explore wiki, then read_file to find the answer.
 2. For source code questions (e.g., "what framework"): Use read_file on backend/app/main.py.
-3. For data questions (e.g., "how many items"): Use query_api to query the live system.
+3. For data questions (e.g., "how many items", "how many learners"): Use query_api to query the live system.
+   - For item counts: GET /items/
+   - For learner counts: GET /learners/ and count the returned array
 4. For status code questions: Use query_api without auth headers to get the error response.
 5. For bug diagnosis: Use query_api to reproduce the error, then read_file to find the buggy code.
+   - When asked about bugs or crashes, look for: division operations (risk of divide by zero), sorting with None values, missing null checks, type errors.
+   - Specifically scan for patterns like: `/ variable`, `sorted(..., key=...)`, `float()`, `int()` without None checks.
 6. For listing questions (e.g., "list all routers"): Use list_files to find files, then read ALL relevant files before answering.
 7. For architecture questions (e.g., "request journey"): Read docker-compose.yml, Dockerfile, caddy/Caddyfile, and backend/app/main.py, then synthesize the full picture.
+   - IMPORTANT: After reading these 4 files, you MUST provide your final answer describing the full request path. Do NOT say "Let me read X" or "Now I need to read Y".
+8. For comparison questions (e.g., "compare X vs Y", "how does A handle failures vs B"): Read BOTH source files being compared, then synthesize the differences.
+   - Example: To compare ETL vs API error handling, read backend/app/etl.py AND backend/app/routers/*.py files
 
-Always provide a source reference when possible:
-- For wiki: wiki/filename.md#section-anchor
-- For source code: backend/app/filename.py
+Always provide a source reference when possible. The source should be the actual file path you read to find the answer:
+- For wiki: wiki/filename.md (e.g., wiki/git-workflow.md)
+- For source code: backend/app/filename.py (e.g., backend/app/main.py)
 - For API responses: API endpoint (e.g., GET /items/)
+- For config: docker-compose.yml, Dockerfile, caddy/Caddyfile
 
 Convert section headers to anchors by: lowercase, replace spaces with hyphens, remove special chars.
 Example: "## Resolving Merge Conflicts" -> wiki/git-workflow.md#resolving-merge-conflicts
 
 CRITICAL RULES:
-1. You must respond with a final answer after gathering information. Do not say things like "Let me read X next" or "Now I need to read Y".
+1. NEVER say things like "Let me read X", "Now I need to read Y", "I should check Z" in your final answer. These are internal thoughts, not final answers.
 2. Your final answer should directly answer the question with all relevant details and include source references.
-3. For architecture questions: After reading docker-compose.yml, Dockerfile, caddy/Caddyfile, and backend/app/main.py, you MUST provide your final answer - do not read more files.
-4. Do not mention that you are using tools or gathering more information in your final answer.
+3. For architecture questions (e.g., "request journey"): After reading docker-compose.yml, Dockerfile, caddy/Caddyfile, and backend/app/main.py, you MUST provide your final answer describing the full request path - do NOT make more tool calls.
+4. For comparison questions: After reading BOTH files being compared, you MUST provide your final answer synthesizing the differences - do NOT make more tool calls.
+5. For bug questions: After identifying the bug, clearly state what operation causes the crash and why (e.g., "division by zero when total_learners is 0", "sorting fails when avg_score is None").
+6. Do not mention that you are using tools or gathering more information in your final answer.
 
 When you have gathered all the information needed, respond with ONLY your final answer (no tool calls).
 """
@@ -452,30 +462,37 @@ def execute_tool_call(tool_call: dict) -> str:
 
 def extract_source_from_answer(answer: str) -> str:
     """Extract source reference from the LLM's answer.
-    
+
     Looks for patterns like wiki/filename.md or backend/app/filename.py
     """
-    # Look for wiki file references
+    # Look for wiki file references (case insensitive)
     pattern = r'wiki/[\w-]+\.md(?:#[\w-]+)?'
     match = re.search(pattern, answer, re.IGNORECASE)
-    
+
     if match:
         return match.group()
-    
+
     # Look for source code references
     pattern = r'backend/app/[\w_/]+\.py'
     match = re.search(pattern, answer)
-    
+
     if match:
         return match.group()
-    
+
     # Look for config file references
     pattern = r'(docker-compose\.yml|Dockerfile)'
     match = re.search(pattern, answer)
-    
+
     if match:
         return match.group()
-    
+
+    # Look for caddy file references
+    pattern = r'caddy/[\w./]+'
+    match = re.search(pattern, answer, re.IGNORECASE)
+
+    if match:
+        return match.group()
+
     return ""
 
 
