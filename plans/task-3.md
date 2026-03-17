@@ -158,28 +158,21 @@ The `run_eval.py` script tests 10 questions:
 
 ## Initial Benchmark Score
 
-**To run the benchmark:**
+**First run result:** 0/5 passed (0%)
 
-1. Ensure the backend is running on your VM:
-   ```bash
-   docker compose ps
-   ```
+**First failures:** All 5 questions failed with:
+```
+Agent exited with code 1: /dev/fd/63: line 15: your-vm-ip: No such file or directory
+```
 
-2. Ensure the Qwen Code API is running:
-   ```bash
-   curl http://localhost:42005/v1/models
-   ```
+**Root cause:** The `.env.agent.example` file contained `<your-vm-ip>` placeholder which bash tried to interpret as a redirection command when sourcing the file.
 
-3. Run the evaluation:
-   ```bash
-   uv run run_eval.py
-   ```
+**Fix applied:**
+1. Removed all `<your-vm-ip>` placeholders from `.env.agent.example`
+2. Set default to OpenRouter (`https://openrouter.ai/api/v1`) which is publicly accessible
+3. Ensured all env file values are properly quoted
 
-4. If tests fail, iterate:
-   - Check which tool was (not) called
-   - Adjust system prompt or tool descriptions
-   - Re-run until all pass
-
-- Score: _/10 (run `uv run run_eval.py` to get your score)
-- First failures: [fill in after first run]
-- Iteration strategy: [fill in after first run]
+**Iteration strategy:**
+1. Re-run autochecker to verify the bash sourcing error is fixed
+2. If LLM API errors occur, ensure autochecker can inject its own credentials
+3. Test tool calling locally with `uv run run_eval.py`
