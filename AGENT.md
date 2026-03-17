@@ -394,7 +394,7 @@ The agent is tested against 10 questions in `run_eval.py`:
 
 ## Lessons Learned
 
-1. **Tool descriptions matter**: Initially, the LLM didn't call `query_api` for data questions. Adding explicit examples ("e.g., GET /items/ to count items") fixed this.
+1. **Tool descriptions matter**: Initially, the LLM didn't call `query_api` for data questions. Adding explicit examples ("e.g., GET /items/ to count items, GET /learners/ to count learners") and listing all available endpoints in the tool description fixed this.
 
 2. **Handle null content**: The LLM sometimes returns `content: null` when making tool calls. Using `(msg.get("content") or "")` instead of `msg.get("content", "")` prevents `AttributeError`.
 
@@ -403,6 +403,28 @@ The agent is tested against 10 questions in `run_eval.py`:
 4. **Environment variables**: Reading all config from environment variables (not hardcoded) is critical for the autochecker to work with different credentials.
 
 5. **Max tool calls**: The 10-call limit prevents infinite loops but may truncate complex multi-step reasoning. The final summary call helps recover partial answers.
+
+6. **System prompt guidance for comparison questions**: For questions asking to compare two things (e.g., "compare ETL vs API error handling"), the system prompt must explicitly instruct the LLM to read BOTH source files and then synthesize the differences. Without this guidance, the LLM might read only one file.
+
+7. **query_api tool auth parameter**: Added an optional `auth` parameter to allow testing unauthenticated access (useful for status code questions). The default is `true` for backwards compatibility.
+
+8. **Handling comparison questions**: The agent needs to read multiple files (e.g., `backend/app/etl.py` AND `backend/app/routers/*.py`) and synthesize the differences. The system prompt now includes explicit guidance for this pattern.
+
+## Task 3 Additions
+
+Task 3 extended the Task 2 agent with:
+
+1. **New `query_api` tool**: Calls the backend API with authentication, supporting GET/POST/PUT/DELETE methods.
+
+2. **Updated system prompt**: Guides the LLM to choose the right tool based on question type:
+   - Wiki questions → `read_file`/`list_files`
+   - Source code questions → `read_file` on code files
+   - Data/system questions → `query_api`
+   - Comparison questions → Read BOTH files being compared
+
+3. **Environment variable loading**: The agent now reads `LMS_API_KEY` from `.env.docker.secret` for API authentication.
+
+4. **Enhanced tool descriptions**: The `query_api` tool description now lists all available endpoints (`/items/`, `/learners/`, `/analytics/*`) to help the LLM know what's available.
 2. `read_file` tool is used for documentation questions
 3. `list_files` tool is used for directory exploration questions
 4. Source field contains wiki file reference
